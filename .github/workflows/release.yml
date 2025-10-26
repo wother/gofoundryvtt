@@ -1,0 +1,145 @@
+name: Release
+
+# Workflow is currently disabled - uncomment to enable automatic releases
+# on:
+#   push:
+#     tags:
+#       - 'v*'
+
+# Manual trigger only for now
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test Before Release
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.3'
+        cache: true
+
+    - name: Run tests
+      run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+    - name: Check coverage
+      run: |
+        coverage=$(go tool cover -func=coverage.txt | grep total | awk '{print $3}' | sed 's/%//')
+        echo "Coverage: $coverage%"
+        if (( $(echo "$coverage < 80.0" | bc -l) )); then
+          echo "Coverage $coverage% is below 80% threshold"
+          exit 1
+        fi
+
+  build:
+    name: Build Release Artifacts
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          # Windows ARM64 builds often have issues
+          - goos: windows
+            goarch: arm64
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.3'
+        cache: true
+
+    - name: Build
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        mkdir -p dist
+        output="gofoundryvtt-${{ matrix.goos }}-${{ matrix.goarch }}"
+        if [ "${{ matrix.goos }}" = "windows" ]; then
+          output="${output}.exe"
+        fi
+        go build -v -ldflags="-s -w" -o "dist/${output}" ./...
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: gofoundryvtt-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: dist/*
+        retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Prepare release assets
+      run: |
+        mkdir -p release
+        find artifacts -type f -exec cp {} release/ \;
+        ls -la release/
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        if [ -f CHANGELOG.md ]; then
+          # Extract the latest version's changelog
+          sed -n '/## \[/,/## \[/p' CHANGELOG.md | sed '$d' > /tmp/release_notes.md
+        else
+          echo "Release for version ${{ github.ref_name }}" > /tmp/release_notes.md
+        fi
+        cat /tmp/release_notes.md
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
+        body_path: /tmp/release_notes.md
+        draft: false
+        prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-pre') || startsWith(github.ref_name, 'v0.') }}
+        files: |
+          release/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-pkg:
+    name: Publish to pkg.go.dev
+    needs: release
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Trigger pkg.go.dev update
+      run: |
+        curl -f "https://proxy.golang.org/github.com/wother/gofoundryvtt/@v/${{ github.ref_name }}.info" || true
+        echo "Triggered pkg.go.dev indexing for ${{ github.ref_name }}"
