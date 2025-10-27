@@ -1,0 +1,30 @@
+# golangci-lint configuration for gofoundryvtt
+# See: https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - bodyclose
+    - contextcheck
+    - errname
+    - errorlint
+    - goconst
+    - gocritic
+    - gosec
+    - nilerr
+    - unconvert
+    - unparam
